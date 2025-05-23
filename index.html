@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>冒險者之旅</title>
+  <style>
+    body { font-family: 'Courier New', monospace; background-color: #111; color: #eee; padding: 20px; }
+    #story { white-space: pre-line; margin-bottom: 20px; }
+    .choice-button { background-color: #444; color: #fff; border: none; padding: 10px 20px; margin: 5px; border-radius: 5px; cursor: pointer; }
+    .choice-button:hover { background-color: #666; }
+    #inventory { margin-top: 20px; font-size: 14px; color: #aaa; }
+    #inputArea { display: none; margin-top: 20px; }
+    #swingInput { padding: 5px; width: 200px; }
+    #timer { font-size: 18px; color: #ff5555; margin-top: 10px; display: none; }
+    #qteArea { display: none; margin-top: 20px; color: #ff0; }
+  </style>
+</head>
+<body>
+  <div id="story"></div>
+  <div id="choices"></div>
+  <div id="timer"></div>
+  <div id="qteArea"></div>
+  <div id="inputArea">
+    請輸入指令（SWING! 或 SHOOT!）：<br>
+    <input type="text" id="swingInput">
+    <button class="choice-button" id="submitSwing">送出</button>
+  </div>
+  <div id="inventory"></div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const story = document.getElementById('story');
+      const choices = document.getElementById('choices');
+      const inventory = document.getElementById('inventory');
+      const inputArea = document.getElementById('inputArea');
+      const swingInput = document.getElementById('swingInput');
+      const submitSwing = document.getElementById('submitSwing');
+      const timer = document.getElementById('timer');
+      const qteArea = document.getElementById('qteArea');
+
+      let gameState = 'start';
+      let items = [];
+      let lastBattle = '';
+      let dodgeTimeout, countdownInterval;
+
+      const scenes = {
+        start: {
+          text: '你站在一座古老城堡前，天色漸暗。\n你要怎麼做？',
+          options: [
+            { text: '進入城堡', next: 'hall' },
+            { text: '離開這裡', next: 'leave' }
+          ]
+        },
+        hall: {
+          text: '你走進大廳，兩旁掛著破舊的畫像。\n有兩條通道，要選哪一邊呢？',
+          options: [
+            { text: '左', next: 'library' },
+            { text: '右', next: 'dungeon' }
+          ]
+        },
+        library: {
+          text: '你進入了一個古老的圖書館，每本書似乎都記載了淵妙的知識。\n牆上掛著一把修長優雅的長弓，角落的書本竟自動翻開來。',
+          options: [
+            { text: '拾起長弓', next: 'gotBow', effect: () => items.push('遊俠長弓') },
+            { text: '觸摸書頁', next: 'portal' },
+            { text: '離開', next: 'hall' }
+          ]
+        },
+        gotBow: {
+          text: '你取得遊俠長弓。\n圖書館依舊寧靜。',
+          options: [
+            { text: '看書', next: 'portal' },
+            { text: '離開', next: 'hall' }
+          ]
+        },
+        portal: {
+          text: '你觸碰書頁，其中開啟了一道傳送門，你被吸入其中。\n要進入新世界嗎？',
+          options: [
+            { text: '進入', next: 'newWorld' }
+          ]
+        },
+        newWorld: {
+          text: '你來到蒼翠的森林，空氣瀰漫著魔力，\n石台上插著魔法劍。',
+          options: [
+            { text: '拔劍', next: 'pullSword' },
+            { text: '四處探索', next: 'encounter' },
+            { text: '回到地牢', next: 'dungeon' }
+          ]
+        },
+        pullSword: {
+          text: '你雙手握住劍柄，一道神聖力量從劍身流出，你需要在正確的時機拔出魔法劍！',
+          onEnter: () => { showQTE('sword', 'armed', 'pullFail'); },
+          options: []
+        },
+        pullFail: {
+          text: '你拔劍時機錯誤，魔法劍反噬了你，你失去了意識……',
+          options: []
+        },
+        armed: {
+          text: '你裝備魔法劍。\n這時，一頭魔獸從草叢中跑了出來，你得飛快閃避！',
+          onEnter: () => {
+            items.push('魔法劍');
+            lastBattle = 'armed';
+            showDodge();
+          },
+          options: []
+        },
+        encounter: {
+          text: '一頭魔獸突然從草叢中蹦了出來，你手無寸鐵，現在需要的是依賴反應閃避！',
+          onEnter: () => { lastBattle = 'encounter'; showDodge(); },
+          options: []
+        },
+        dungeon: {
+          text: '你身在黑暗的地牢，一聲聲低吼響起......有什麼東西正在逼近。',
+          options: [
+            { text: '戰鬥', next: 'preFight' },
+            { text: '回大廳', next: 'hall' },
+            { text: '前往一旁的森林石門', next: 'newWorld' }
+          ]
+        },
+        preFight: {
+          text: '你面對地牢深處的魔獸，牠發出一聲怒吼衝向你，你得快點閃避！',
+          onEnter: () => { lastBattle = 'fight'; showDodge(); },
+          options: []
+        },
+        fight: {
+          text: '你徒手與兇猛的魔獸搏鬥了起來，經過一番激戰，雖然身受重傷，但依然成功地打敗了牠。',
+          options: [
+            { text: '繼續', next: 'treasure' }
+          ]
+        },
+        fight2: {
+          text: '你徒手與兇猛的魔獸搏鬥了起來，經過一番激戰，雖然身受重傷，但依然成功地打敗了牠。',
+          options: [
+            { text: '繼續', next: 'postEncounter' }
+          ]
+        },
+        dodgeSuccess: {
+          text: '你靈巧的閃避了魔獸的攻擊。\n現在你可以反擊了。請輸入SWING!或SHOOT!進行攻擊。',
+          requireSwing: true,
+          options: []
+        },
+        dodgeFail: {
+          text: '你被擊中，倒下了。',
+          options: []
+        },
+        postEncounter: {
+          text: '你受傷逃出，成為倖存者。',
+          options: [
+            { text: '回地牢', next: 'alternateDungeon' }
+          ]
+        },
+        alternateDungeon: {
+          text: '此時，一名神秘的男子在此等候，他說：寶藏不屬你，離開吧，踏上你的命運之路。',
+          options: [
+            { text: '接受', next: 'wandering' }
+          ]
+        },
+        wandering: {
+          text: '你踏上無盡的旅程，既無榮耀也無財寶，但這是你的命運。',
+          options: []
+        },
+       treasure: {
+          text: '你看到了一個陳舊的寶箱，裝著閃耀的寶石與古老、神秘的卷軸。然而，一旁的岩縫中卻卡著一名旅人，以最後的力氣嘶啞地向你說著救命。\n這時，一名神秘的黑衣男子出現了，他說：「寶藏與人命，你只能選一個。」',
+          options: [
+            { text: '救人', next: 'saveEnemy' },
+            { text: '奪寶', next: 'takeTreasure', effect: () => items.push('寶石', '卷軸') }
+          ]
+        },
+        rich: {
+          text: '你帶著寶藏離開，成為了富有的傳奇冒險家。',
+          options: []
+        },
+        victory_sword: {
+          text: '你揮舞魔法劍，劍尖綻放光芒，一擊將魔獸斬於劍下。你站立在敵人屍首前，突然在歡呼聲中驚覺過來自己已然成了新世界的英雄！',
+          options: []
+        },
+        victory_bow: {
+          text: '你拉滿弓弦，一箭貫穿眉心，魔獸發出一聲哀鳴後，不支倒地。你矗立在遠處，伴隨著人們的歡呼聲，你成了新世界的英雄！',
+          options: []
+        },
+        fail: {
+          text: '攻擊失敗，被魔獸重創……你英勇犧牲。',
+          options: []
+        },
+        saveEnemy: {
+          text: '你選擇救人，放棄了寶藏。他微弱地說出謝謝，卻在數年後引發了戰火與災厄。你的選擇害死了數百萬人，你成了眾人口中的「救世之錯」。',
+          options: []
+        },
+       takeTreasure: {
+  text: '你毫不猶豫地拿起寶藏，離開了那具微微顫抖的身體。你成為富有的傳奇，卻在每夜夢中見到那雙眼睛……',
+  options: []
+       },
+        leave: {
+          text: '你離開了城堡，也許，你改日會回到此地面對命運。',
+          options: []
+        }
+      };
+
+      function renderScene(key) {
+        clearTimeout(dodgeTimeout);
+        clearInterval(countdownInterval);
+        timer.style.display = 'none';
+        inputArea.style.display = 'none';
+        qteArea.style.display = 'none';
+
+        const scene = scenes[key];
+        if (!scene) { console.error('未知場景', key); return; }
+        gameState = key;
+        story.textContent = scene.text;
+        choices.innerHTML = '';
+        swingInput.value = '';
+        if (scene.requireSwing) inputArea.style.display = 'block';
+        if (scene.onEnter) { scene.onEnter(); return; }
+        if (scene.options) {
+          scene.options.forEach(o => {
+            let b = document.createElement('button');
+            b.textContent = o.text;
+            b.className = 'choice-button';
+            b.onclick = () => {
+              o.effect && o.effect();
+              renderScene(o.next);
+            };
+            choices.appendChild(b);
+          });
+        }
+        inventory.textContent = items.length ? `裝備：${items.join(', ')}` : '';
+      }
+
+      submitSwing.onclick = () => {
+        if (!scenes[gameState]?.requireSwing) return;
+        let v = swingInput.value.trim().toUpperCase();
+        if (v === 'SWING!' && items.includes('魔法劍')) {
+          renderScene('victory_sword');
+        } else if (v === 'SHOOT!' && items.includes('遊俠長弓')) {
+          renderScene('victory_bow');
+        } else {
+          renderScene('fail');
+        }
+      };
+
+      function showDodge() {
+        const opts = ['蹲下', '大叫', '逃跑', '閃避', '裝死', '舉劍'].sort(() => Math.random() - 0.5);
+        let c = 3;
+        timer.style.display = 'block';
+        timer.textContent = `倒數：${c}秒`;
+        countdownInterval = setInterval(() => {
+          c--;
+          if (c > 0) timer.textContent = `倒數：${c}秒`;
+          else {
+            clearInterval(countdownInterval);
+            timer.style.display = 'none';
+          }
+        }, 1000);
+        choices.innerHTML = '';
+        opts.forEach(txt => {
+          let b = document.createElement('button');
+          b.textContent = txt;
+          b.className = 'choice-button';
+          b.onclick = () => {
+            clearTimeout(dodgeTimeout);
+            clearInterval(countdownInterval);
+            timer.style.display = 'none';
+            if (txt === '閃避') {
+  if (lastBattle === 'fight') {
+    renderScene('fight');
+  } else if (lastBattle === 'armed' || lastBattle === 'encounter') {
+    if (!items.includes('魔法劍') && !items.includes('遊俠長弓')) {
+      renderScene('fight2');
+    } else {
+      renderScene('dodgeSuccess');
+    }
+  } else {
+    renderScene('postEncounter');
+              }
+            } else {
+              renderScene('dodgeFail');
+            }
+          };
+          choices.appendChild(b);
+        });
+        dodgeTimeout = setTimeout(() => renderScene('dodgeFail'), 3000);
+      }
+
+      function showQTE(type, successScene, failScene) {
+        const qteWord = type === 'bomb' ? '跳開' : '拔劍';
+        const opts = ['尖叫', '握拳', '跳開', '翻滾', '拔劍', '揮手'].sort(() => Math.random() - 0.5);
+        let c = 3;
+        qteArea.style.display = 'block';
+        qteArea.textContent = `快速反應：請點選「${qteWord}」才能成功！ 倒數：${c}秒`;
+        countdownInterval = setInterval(() => {
+          c--;
+          if (c > 0) qteArea.textContent = `快速反應：請點選「${qteWord}」才能成功！ 倒數：${c}秒`;
+          else {
+            clearInterval(countdownInterval);
+            renderScene(failScene);
+          }
+        }, 1000);
+        choices.innerHTML = '';
+        opts.forEach(txt => {
+          const b = document.createElement('button');
+          b.textContent = txt;
+          b.className = 'choice-button';
+          b.onclick = () => {
+            clearInterval(countdownInterval);
+            if (txt === qteWord) {
+              renderScene(successScene);
+            } else {
+              renderScene(failScene);
+            }
+          };
+          choices.appendChild(b);
+        });
+      }
+
+      renderScene(gameState);
+    });
+  </script>
+</body>
+</html>
